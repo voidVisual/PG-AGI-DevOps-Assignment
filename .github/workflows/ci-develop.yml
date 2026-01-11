@@ -1,0 +1,75 @@
+name: CI - Build & Push Images
+
+on:
+  push:
+    branches:
+      - develop
+
+env:
+  SHA_TAG: ${{ github.sha }}
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Backend tests
+      - name: Run Backend Tests
+        working-directory: backend
+        run: |
+          npm install
+          npm test
+
+      # Frontend tests
+      - name: Run Frontend Tests
+        working-directory: frontend
+        run: |
+          npm install
+          npm test
+
+      # AWS ECR Login
+      - name: Login to AWS ECR
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          region: ${{ secrets.AWS_REGION }}
+
+      # Build & Push Backend Image (AWS)
+      - name: Build & Push Backend (AWS ECR)
+        run: |
+          docker build -t backend:${SHA_TAG} backend
+          docker tag backend:${SHA_TAG} \
+            ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/backend:${SHA_TAG}
+          docker push \
+            ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/backend:${SHA_TAG}
+
+      # Build & Push Frontend Image (AWS)
+      - name: Build & Push Frontend (AWS ECR)
+        run: |
+          docker build -t frontend:${SHA_TAG} frontend
+          docker tag frontend:${SHA_TAG} \
+            ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/frontend:${SHA_TAG}
+          docker push \
+            ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/frontend:${SHA_TAG}
+
+      # GCP Auth
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      # Docker auth for GCP
+      - name: Configure Docker for GCP
+        run: |
+          gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev
+
+      # Push images to GCP Artifact Registry
+      - name: Push Images to GCP
+        run: |
+          docker tag backend:${SHA_TAG} \
+            ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/app/backend:${SHA_TAG}
+          docker push \
+            ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/app/backend:${SHA_TAG}
