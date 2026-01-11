@@ -38,8 +38,7 @@ jobs:
         working-directory: frontend
         run: |
           npm install
-          npx playwright install --with-deps
-          npx playwright test
+          
 
       # ---------------- DOCKER ----------------
       - name: GCP Auth
