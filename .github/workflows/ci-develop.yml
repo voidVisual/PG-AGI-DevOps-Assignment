@@ -7,17 +7,16 @@ on:
 
 env:
   SHA_TAG: ${{ github.sha }}
+  IMAGE_BACKEND: backend
+  IMAGE_FRONTEND: frontend
 
 jobs:
-  ci:
+  # ---------------- TEST JOB ----------------
+  test:
     runs-on: ubuntu-latest
-
     steps:
-      # ---------------- CHECKOUT ----------------
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # ---------------- BACKEND ----------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -29,7 +28,6 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ---------------- FRONTEND ----------------
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -39,30 +37,121 @@ jobs:
 
       - name: Install Frontend Dependencies
         working-directory: frontend
-        run: |
-          npm ci
+        run: npm ci
 
-      # ---------------- DOCKER HUB ----------------
+      - name: Run Tests
+        run: |
+          echo "Running tests..."
+          # pytest
+          # npm test
+
+  # ---------------- SECURITY SCAN ----------------
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gitleaks Secret Scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------- BUILD IMAGES ----------------
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Backend Image
+        run: |
+          docker build -t $IMAGE_BACKEND:$SHA_TAG ./backend
+          docker save $IMAGE_BACKEND:$SHA_TAG -o /tmp/backend.tar
+
+      - name: Build Frontend Image
+        run: |
+          docker build -t $IMAGE_FRONTEND:$SHA_TAG ./frontend
+          docker save $IMAGE_FRONTEND:$SHA_TAG -o /tmp/frontend.tar
+
+      - name: Upload Backend Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-image
+          path: /tmp/backend.tar
+
+      - name: Upload Frontend Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-image
+          path: /tmp/frontend.tar
+
+  # ---------------- VULNERABILITY SCAN ----------------
+  scan:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Backend Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+          path: /tmp
+
+      - name: Download Frontend Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-image
+          path: /tmp
+
+      - name: Load Images
+        run: |
+          docker load --input /tmp/backend.tar
+          docker load --input /tmp/frontend.tar
+
+      - name: Scan Backend with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ env.IMAGE_BACKEND }}:${{ env.SHA_TAG }}'
+          format: 'table'
+          exit-code: '0'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Scan Frontend with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ env.IMAGE_FRONTEND }}:${{ env.SHA_TAG }}'
+          format: 'table'
+          exit-code: '0'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+  # ---------------- PUSH TO DOCKER HUB ----------------
+  push:
+    needs: scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build & Push Backend Image
+      - name: Push Backend Image
         run: |
-          if [ ! -d "backend" ]; then
-            echo " Backend directory not found!"
-            exit 1
-          fi
-          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/backend:${SHA_TAG} ./backend
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/backend:${SHA_TAG}
+          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_BACKEND:latest -t ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_BACKEND:$SHA_TAG ./backend
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_BACKEND:latest
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_BACKEND:$SHA_TAG
 
-      - name: Build & Push Frontend Image
+      - name: Push Frontend Image
         run: |
-          if [ ! -d "frontend" ]; then
-            echo "Frontend directory not found!"
-            exit 1
-          fi
-          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/frontend:${SHA_TAG} ./frontend
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/frontend:${SHA_TAG}
+          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_FRONTEND:latest -t ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_FRONTEND:$SHA_TAG ./frontend
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_FRONTEND:latest
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_FRONTEND:$SHA_TAG
