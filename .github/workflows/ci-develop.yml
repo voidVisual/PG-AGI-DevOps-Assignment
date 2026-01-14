@@ -1,8 +1,4 @@
-<<<<<<< HEAD
 name: CI Pipeline - Develop Branch
-=======
-name: CI - Develop
->>>>>>> ac28e6e2acee03732f6a7d92f0df292ed8cd7b0c
 
 on:
   push:
@@ -10,74 +6,84 @@ on:
       - develop
 
 env:
-<<<<<<< HEAD
+  SHA_TAG: ${{ github.sha }}
+  IMAGE_BACKEND: backend
+  IMAGE_FRONTEND: frontend
   REGISTRY_AWS: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
   REGISTRY_GCP: gcr.io
   REGISTRY_AZURE: ${{ secrets.AZURE_REGISTRY_NAME }}.azurecr.io
 
 jobs:
+  # ---------------- TEST JOB ----------------
   test:
     name: Run Tests
     runs-on: ubuntu-latest
-    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
-          cache: 'pip'
+          python-version: "3.12"
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'npm'
-          cache-dependency-path: |
-            frontend/package-lock.json
-            frontend/playwright.package.json
-
-      - name: Install backend dependencies
+      - name: Install Backend Dependencies
+        working-directory: backend
         run: |
-          cd backend
-          python -m pip install --upgrade pip
+          pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Run backend tests
-        run: |
-          cd backend
-          python -m pytest test_main.py -v --tb=short
+        working-directory: backend
+        run: python -m pytest test_main.py -v --tb=short
 
-      - name: Install frontend dependencies
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Frontend Dependencies
+        working-directory: frontend
         run: |
-          cd frontend
           npm ci
           npx playwright install
 
       - name: Run frontend tests
-        run: |
-          cd frontend
-          npm test
+        working-directory: frontend
+        run: npm test
 
       - name: Run e2e tests
-        run: |
-          cd frontend
-          npx playwright test
+        working-directory: frontend
+        run: npx playwright test
 
-  build-and-push:
-    name: Build and Push Docker Images
+  # ---------------- SECURITY SCAN ----------------
+  security-scan:
+    name: Security Scanning
     runs-on: ubuntu-latest
-    needs: test
-    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      
+      - name: Gitleaks Secret Scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------- BUILD AND PUSH ----------------
+  build-and-push:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-latest
+    needs: [test, security-scan]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -103,89 +109,14 @@ jobs:
 
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
-=======
-  SHA_TAG: ${{ github.sha }}
-  IMAGE_BACKEND: backend
-  IMAGE_FRONTEND: frontend
-
-jobs:
-  # ---------------- TEST JOB ----------------
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Install Backend Dependencies
-        working-directory: backend
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install Frontend Dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Run Tests
-        run: |
-          echo "Running tests..."
-          # pytest
-          # npm test
-
-  # ---------------- SECURITY SCAN ----------------
-  security-scan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Gitleaks Secret Scan
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # ---------------- BUILD IMAGES ----------------
-  build:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build Backend Image
-        run: |
-          docker build -t $IMAGE_BACKEND:$SHA_TAG ./backend
-          docker save $IMAGE_BACKEND:$SHA_TAG -o /tmp/backend.tar
-
-      - name: Build Frontend Image
-        run: |
-          docker build -t $IMAGE_FRONTEND:$SHA_TAG ./frontend
-          docker save $IMAGE_FRONTEND:$SHA_TAG -o /tmp/frontend.tar
-
-      - name: Upload Backend Artifact
-        uses: actions/upload-artifact@v4
->>>>>>> ac28e6e2acee03732f6a7d92f0df292ed8cd7b0c
-        with:
-          name: backend-image
-          path: /tmp/backend.tar
-
-<<<<<<< HEAD
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Configure Docker for GCR
-        run: |
-          gcloud auth configure-docker
+        run: gcloud auth configure-docker
 
       - name: Login to Azure Container Registry
         uses: docker/login-action@v3
@@ -194,6 +125,7 @@ jobs:
           username: ${{ secrets.AZURE_REGISTRY_USERNAME }}
           password: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
 
+      # Build and push to AWS ECR
       - name: Build and push backend image to AWS ECR
         uses: docker/build-push-action@v5
         with:
@@ -216,6 +148,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Build and push to GCP GCR
       - name: Build and push backend image to GCR
         uses: docker/build-push-action@v5
         with:
@@ -238,6 +171,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Build and push to Azure ACR
       - name: Build and push backend image to Azure ACR
         uses: docker/build-push-action@v5
         with:
@@ -260,6 +194,27 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Vulnerability scanning with Trivy
+      - name: Scan backend image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY_AWS }}/pg-agi-backend:${{ steps.image-tag.outputs.tag }}
+          format: 'table'
+          exit-code: '0'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Scan frontend image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY_AWS }}/pg-agi-frontend:${{ steps.image-tag.outputs.tag }}
+          format: 'table'
+          exit-code: '0'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
       - name: Create deployment artifact
         run: |
           cat > deploy-info.json <<EOF
@@ -272,88 +227,8 @@ jobs:
           EOF
 
       - name: Upload deployment artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: deploy-info
           path: deploy-info.json
           retention-days: 30
-=======
-      - name: Upload Frontend Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-image
-          path: /tmp/frontend.tar
-
-  # ---------------- VULNERABILITY SCAN ----------------
-  scan:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download Backend Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: backend-image
-          path: /tmp
-
-      - name: Download Frontend Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend-image
-          path: /tmp
-
-      - name: Load Images
-        run: |
-          docker load --input /tmp/backend.tar
-          docker load --input /tmp/frontend.tar
-
-      - name: Scan Backend with Trivy
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: '${{ env.IMAGE_BACKEND }}:${{ env.SHA_TAG }}'
-          format: 'table'
-          exit-code: '0'
-          ignore-unfixed: true
-          vuln-type: 'os,library'
-          severity: 'CRITICAL,HIGH'
-
-      - name: Scan Frontend with Trivy
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: '${{ env.IMAGE_FRONTEND }}:${{ env.SHA_TAG }}'
-          format: 'table'
-          exit-code: '0'
-          ignore-unfixed: true
-          vuln-type: 'os,library'
-          severity: 'CRITICAL,HIGH'
-
-  # ---------------- PUSH TO DOCKER HUB ----------------
-  push:
-    needs: scan
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-          
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Push Backend Image
-        run: |
-          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_BACKEND:latest -t ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_BACKEND:$SHA_TAG ./backend
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_BACKEND:latest
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_BACKEND:$SHA_TAG
-
-      - name: Push Frontend Image
-        run: |
-          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_FRONTEND:latest -t ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_FRONTEND:$SHA_TAG ./frontend
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_FRONTEND:latest
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_FRONTEND:$SHA_TAG
->>>>>>> ac28e6e2acee03732f6a7d92f0df292ed8cd7b0c
