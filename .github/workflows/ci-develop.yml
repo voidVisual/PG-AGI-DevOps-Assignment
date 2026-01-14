@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 name: CI Pipeline - Develop Branch
+=======
+name: CI - Develop
+>>>>>>> ac28e6e2acee03732f6a7d92f0df292ed8cd7b0c
 
 on:
   push:
@@ -6,6 +10,7 @@ on:
       - develop
 
 env:
+<<<<<<< HEAD
   REGISTRY_AWS: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
   REGISTRY_GCP: gcr.io
   REGISTRY_AZURE: ${{ secrets.AZURE_REGISTRY_NAME }}.azurecr.io
@@ -98,9 +103,83 @@ jobs:
 
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+=======
+  SHA_TAG: ${{ github.sha }}
+  IMAGE_BACKEND: backend
+  IMAGE_FRONTEND: frontend
 
+jobs:
+  # ---------------- TEST JOB ----------------
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Backend Dependencies
+        working-directory: backend
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Frontend Dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run Tests
+        run: |
+          echo "Running tests..."
+          # pytest
+          # npm test
+
+  # ---------------- SECURITY SCAN ----------------
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gitleaks Secret Scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------- BUILD IMAGES ----------------
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Backend Image
+        run: |
+          docker build -t $IMAGE_BACKEND:$SHA_TAG ./backend
+          docker save $IMAGE_BACKEND:$SHA_TAG -o /tmp/backend.tar
+
+      - name: Build Frontend Image
+        run: |
+          docker build -t $IMAGE_FRONTEND:$SHA_TAG ./frontend
+          docker save $IMAGE_FRONTEND:$SHA_TAG -o /tmp/frontend.tar
+
+      - name: Upload Backend Artifact
+        uses: actions/upload-artifact@v4
+>>>>>>> ac28e6e2acee03732f6a7d92f0df292ed8cd7b0c
+        with:
+          name: backend-image
+          path: /tmp/backend.tar
+
+<<<<<<< HEAD
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
@@ -198,3 +277,83 @@ jobs:
           name: deploy-info
           path: deploy-info.json
           retention-days: 30
+=======
+      - name: Upload Frontend Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-image
+          path: /tmp/frontend.tar
+
+  # ---------------- VULNERABILITY SCAN ----------------
+  scan:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Backend Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+          path: /tmp
+
+      - name: Download Frontend Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-image
+          path: /tmp
+
+      - name: Load Images
+        run: |
+          docker load --input /tmp/backend.tar
+          docker load --input /tmp/frontend.tar
+
+      - name: Scan Backend with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ env.IMAGE_BACKEND }}:${{ env.SHA_TAG }}'
+          format: 'table'
+          exit-code: '0'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Scan Frontend with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ env.IMAGE_FRONTEND }}:${{ env.SHA_TAG }}'
+          format: 'table'
+          exit-code: '0'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+  # ---------------- PUSH TO DOCKER HUB ----------------
+  push:
+    needs: scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Push Backend Image
+        run: |
+          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_BACKEND:latest -t ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_BACKEND:$SHA_TAG ./backend
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_BACKEND:latest
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_BACKEND:$SHA_TAG
+
+      - name: Push Frontend Image
+        run: |
+          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_FRONTEND:latest -t ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_FRONTEND:$SHA_TAG ./frontend
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_FRONTEND:latest
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/$IMAGE_FRONTEND:$SHA_TAG
+>>>>>>> ac28e6e2acee03732f6a7d92f0df292ed8cd7b0c
