@@ -1,4 +1,4 @@
-name: CI - Build & Push Images
+name: CI Pipeline - Develop Branch
 
 on:
   push:
@@ -6,70 +6,195 @@ on:
       - develop
 
 env:
-  SHA_TAG: ${{ github.sha }}
+  REGISTRY_AWS: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+  REGISTRY_GCP: gcr.io
+  REGISTRY_AZURE: ${{ secrets.AZURE_REGISTRY_NAME }}.azurecr.io
 
 jobs:
-  ci:
+  test:
+    name: Run Tests
     runs-on: ubuntu-latest
-
+    
     steps:
-      # Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
-
-      # Backend tests
-      - name: Run Backend Tests
-        working-directory: backend
-        run: |
-          npm install
-          npm test
-
-      # Frontend tests
-      - name: Run Frontend Tests
-        working-directory: frontend
-        run: |
-          npm install
-          npm test
-
-      # AWS ECR Login
-      - name: Login to AWS ECR
-        uses: aws-actions/amazon-ecr-login@v2
         with:
-          region: ${{ secrets.AWS_REGION }}
+          fetch-depth: 0
 
-      # Build & Push Backend Image (AWS)
-      - name: Build & Push Backend (AWS ECR)
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          cache: 'pip'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: |
+            frontend/package-lock.json
+            frontend/playwright.package.json
+
+      - name: Install backend dependencies
         run: |
-          docker build -t backend:${SHA_TAG} backend
-          docker tag backend:${SHA_TAG} \
-            ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/backend:${SHA_TAG}
-          docker push \
-            ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/backend:${SHA_TAG}
+          cd backend
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      # Build & Push Frontend Image (AWS)
-      - name: Build & Push Frontend (AWS ECR)
+      - name: Run backend tests
         run: |
-          docker build -t frontend:${SHA_TAG} frontend
-          docker tag frontend:${SHA_TAG} \
-            ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/frontend:${SHA_TAG}
-          docker push \
-            ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/frontend:${SHA_TAG}
+          cd backend
+          python -m pytest test_main.py -v --tb=short
 
-      # GCP Auth
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm ci
+          npx playwright install
+
+      - name: Run frontend tests
+        run: |
+          cd frontend
+          npm test
+
+      - name: Run e2e tests
+        run: |
+          cd frontend
+          npx playwright test
+
+  build-and-push:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Generate image tag
+        id: image-tag
+        run: |
+          SHA=${{ github.sha }}
+          SHA_SHORT=${SHA:0:7}
+          echo "tag=${SHA_SHORT}" >> $GITHUB_OUTPUT
+          echo "Image tag: ${SHA_SHORT}"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to AWS ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      # Docker auth for GCP
-      - name: Configure Docker for GCP
-        run: |
-          gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
 
-      # Push images to GCP Artifact Registry
-      - name: Push Images to GCP
+      - name: Configure Docker for GCR
         run: |
-          docker tag backend:${SHA_TAG} \
-            ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/app/backend:${SHA_TAG}
-          docker push \
-            ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/app/backend:${SHA_TAG}
+          gcloud auth configure-docker
+
+      - name: Login to Azure Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.AZURE_REGISTRY_NAME }}.azurecr.io
+          username: ${{ secrets.AZURE_REGISTRY_USERNAME }}
+          password: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
+
+      - name: Build and push backend image to AWS ECR
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          tags: |
+            ${{ env.REGISTRY_AWS }}/pg-agi-backend:${{ steps.image-tag.outputs.tag }}
+            ${{ env.REGISTRY_AWS }}/pg-agi-backend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push frontend image to AWS ECR
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ${{ env.REGISTRY_AWS }}/pg-agi-frontend:${{ steps.image-tag.outputs.tag }}
+            ${{ env.REGISTRY_AWS }}/pg-agi-frontend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push backend image to GCR
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          tags: |
+            ${{ env.REGISTRY_GCP }}/${{ secrets.GCP_PROJECT_ID }}/pg-agi-backend:${{ steps.image-tag.outputs.tag }}
+            ${{ env.REGISTRY_GCP }}/${{ secrets.GCP_PROJECT_ID }}/pg-agi-backend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push frontend image to GCR
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ${{ env.REGISTRY_GCP }}/${{ secrets.GCP_PROJECT_ID }}/pg-agi-frontend:${{ steps.image-tag.outputs.tag }}
+            ${{ env.REGISTRY_GCP }}/${{ secrets.GCP_PROJECT_ID }}/pg-agi-frontend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push backend image to Azure ACR
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          tags: |
+            ${{ env.REGISTRY_AZURE }}/pg-agi-backend:${{ steps.image-tag.outputs.tag }}
+            ${{ env.REGISTRY_AZURE }}/pg-agi-backend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push frontend image to Azure ACR
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ${{ env.REGISTRY_AZURE }}/pg-agi-frontend:${{ steps.image-tag.outputs.tag }}
+            ${{ env.REGISTRY_AZURE }}/pg-agi-frontend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Create deployment artifact
+        run: |
+          cat > deploy-info.json <<EOF
+          {
+            "image_tag": "${{ steps.image-tag.outputs.tag }}",
+            "commit_sha": "${{ github.sha }}",
+            "commit_message": "${{ github.event.head_commit.message }}",
+            "timestamp": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          }
+          EOF
+
+      - name: Upload deployment artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: deploy-info
+          path: deploy-info.json
+          retention-days: 30
