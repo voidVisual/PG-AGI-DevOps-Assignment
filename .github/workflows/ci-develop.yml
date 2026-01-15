@@ -50,7 +50,7 @@ jobs:
         working-directory: frontend
         run: |
           npm ci
-          npx playwright install
+          npx playwright install --with-deps
 
       - name: Run frontend tests
         working-directory: frontend
