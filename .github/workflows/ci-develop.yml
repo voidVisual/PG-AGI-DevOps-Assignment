@@ -117,11 +117,19 @@ jobs:
           SHA_SHORT=${SHA:0:7}
           echo "tag=${SHA_SHORT}" >> $GITHUB_OUTPUT
           echo "Image tag: ${SHA_SHORT}"
+          
+          # Set Docker Hub username (use secret if available, otherwise use github username)
+          DOCKER_USER="${{ secrets.DOCKERHUB_USERNAME }}"
+          if [ -z "$DOCKER_USER" ]; then
+            DOCKER_USER="${{ github.repository_owner }}"
+          fi
+          echo "dockerhub-user=${DOCKER_USER}" >> $GITHUB_OUTPUT
+          echo "Docker Hub user: ${DOCKER_USER}"
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          username: ${{ steps.image-tag.outputs.dockerhub-user }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # Build and push to Docker Hub
@@ -131,8 +139,8 @@ jobs:
           context: ./backend
           push: true
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/pg-agi-backend:${{ steps.image-tag.outputs.tag }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/pg-agi-backend:latest
+            ${{ steps.image-tag.outputs.dockerhub-user }}/pg-agi-backend:${{ steps.image-tag.outputs.tag }}
+            ${{ steps.image-tag.outputs.dockerhub-user }}/pg-agi-backend:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -142,8 +150,8 @@ jobs:
           context: ./frontend
           push: true
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/pg-agi-frontend:${{ steps.image-tag.outputs.tag }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/pg-agi-frontend:latest
+            ${{ steps.image-tag.outputs.dockerhub-user }}/pg-agi-frontend:${{ steps.image-tag.outputs.tag }}
+            ${{ steps.image-tag.outputs.dockerhub-user }}/pg-agi-frontend:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -151,7 +159,7 @@ jobs:
       - name: Scan backend image with Trivy
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ secrets.DOCKERHUB_USERNAME }}/pg-agi-backend:${{ steps.image-tag.outputs.tag }}
+          image-ref: ${{ steps.image-tag.outputs.dockerhub-user }}/pg-agi-backend:${{ steps.image-tag.outputs.tag }}
           format: 'table'
           exit-code: '0'
           ignore-unfixed: true
@@ -161,7 +169,7 @@ jobs:
       - name: Scan frontend image with Trivy
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ secrets.DOCKERHUB_USERNAME }}/pg-agi-frontend:${{ steps.image-tag.outputs.tag }}
+          image-ref: ${{ steps.image-tag.outputs.dockerhub-user }}/pg-agi-frontend:${{ steps.image-tag.outputs.tag }}
           format: 'table'
           exit-code: '0'
           ignore-unfixed: true
