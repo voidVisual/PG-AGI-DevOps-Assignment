@@ -37,7 +37,7 @@ jobs:
 
       - name: Run backend tests
         working-directory: backend
-        run: python -m pytest test_main.py -v --tb=short
+        run: python -m pytest app/test_main.py -v --tb=short
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
