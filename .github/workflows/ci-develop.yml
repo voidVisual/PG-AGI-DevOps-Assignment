@@ -276,7 +276,6 @@ jobs:
       #       ${{ env.REGISTRY_AZURE }}/pg-agi-frontend:latest
       #     cache-from: type=gha
       #     cache-to: type=gha,mode=max
-          severity: 'CRITICAL,HIGH'
 
       - name: Create deployment artifact
         run: |
